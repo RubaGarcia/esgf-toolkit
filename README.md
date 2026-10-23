@@ -61,11 +61,6 @@ examples/             example commands and sample outputs
 data/                 local runtime outputs (git-ignored): esgf_data/, *.csv, *.png
 ```
 
-### Where did `esgf.py` go?
-
-The old 550-line `esgf.py` was split by responsibility into the modules above
-(`config` / `cql` / `client` / `records` / `files` / `tables` / `health` / `local`).
-`esgf.py` remains as a thin re-export shim so old scripts keep working.
 
 ## CLI reference
 
