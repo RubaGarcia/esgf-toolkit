@@ -1,6 +1,18 @@
 """Shared argparse options for all esgf-stac CLIs."""
 
+import os
+
 from esgf_stac import NODES
+
+
+def default_out() -> str:
+    """Local data root: $ESGF if set, else ./esgf_data."""
+    return os.environ.get("ESGF") or "./esgf_data"
+
+
+def add_out_arg(ap, help_text):
+    ap.add_argument("--out", default=default_out(),
+                    help=f"{help_text} (default: $ESGF or ./esgf_data)")
 
 
 def add_node_arg(ap, default="east"):
@@ -42,3 +54,19 @@ def build_filters(args, include_rcm=True) -> dict:
 
 def add_health_arg(ap):
     ap.add_argument("--health", default="./health.csv", help="Health CSV (default: ./health.csv)")
+
+
+def union_fieldnames(rows: list) -> list:
+    """CSV columns covering every row: first row's order, then extra keys as they appear.
+
+    STAC items carry different optional properties (e.g. `base_id`), so rows can
+    have different keys; using only the first row's keys breaks csv.DictWriter.
+    """
+    names = []
+    seen = set()
+    for row in rows:
+        for key in row:
+            if key not in seen:
+                seen.add(key)
+                names.append(key)
+    return names
