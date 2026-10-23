@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Heatmap image of ESGF download completeness (model x variable)."""
+"""Heatmap of local downloads (model x variable file counts); --compare adds completeness."""
 
 import argparse
 import csv
+import glob
 import os
 import sys
 from collections import defaultdict
@@ -11,10 +12,11 @@ import requests
 
 from esgf_stac import NODES, iter_items, load_health, parse_filter_values
 from esgf_stac.cli.catalog import fmt_row
-from esgf_stac.cli.common import add_health_arg, add_node_arg
+from esgf_stac.cli.common import add_health_arg, add_node_arg, add_out_arg, union_fieldnames
 from esgf_stac.local import scan_local
 
 DEFAULT_CSV = "./catalog.csv"
+DEFAULT_CSV_DIR = "./catalog"
 
 
 def read_csv_rows(csv_path):
@@ -26,9 +28,49 @@ def write_csv_rows(csv_path, rows):
     if not rows:
         return
     with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer = csv.DictWriter(f, fieldnames=union_fieldnames(rows))
         writer.writeheader()
         writer.writerows(rows)
+
+
+def read_local_rows(csv_dir: str) -> list:
+    rows = []
+    for path in sorted(glob.glob(os.path.join(csv_dir, "*.csv"))):
+        rows.extend(read_csv_rows(path))
+    return rows
+
+
+def _is_downloaded(row: dict) -> bool:
+    """True when a row has at least one local file (comparison or local catalogue)."""
+    key = "files_local" if "files_local" in row else "n_files"
+    try:
+        return int(float(row.get(key) or 0)) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def filter_downloaded_variables(rows: list) -> list:
+    """Keep every row whose variable has at least one downloaded file.
+
+    Missing datasets of a downloaded variable are kept so completeness is shown.
+    """
+    keep = {r.get("variable") or "?" for r in rows if _is_downloaded(r)}
+    return [r for r in rows if (r.get("variable") or "?") in keep]
+
+
+DOMAIN_ALIASES = ("domain", "domain_id", "grid", "grid_label")
+
+
+def _cell_values(row: dict, column: str) -> set:
+    """Values of a filter column, following domain/grid aliases across catalogue layouts."""
+    columns = DOMAIN_ALIASES if column in ("domain", "grid") else (column,)
+    values = set()
+    for col in columns:
+        for part in str(row.get(col) or "").split(","):
+            part = part.strip()
+            if part:
+                values.add(part)
+    return values
 
 
 def filter_rows(rows, collection: str | None, filters: dict) -> list:
@@ -40,9 +82,7 @@ def filter_rows(rows, collection: str | None, filters: dict) -> list:
             continue
         ok = True
         for col, vals in active:
-            cell = str(r.get(col) or "")
-            parts = {p.strip() for p in cell.split(",") if p.strip()}
-            if cell not in vals and not (parts & vals):
+            if not (_cell_values(r, col) & vals):
                 ok = False
                 break
         if ok:
@@ -61,68 +101,123 @@ def compute_rows(args):
             if (r := fmt_row(item, args.out, sizes, base, statuses, show_missing_only=False))]
 
 
-def aggregate(rows):
+def aggregate(rows, metric: str = "status"):
+    """Per-frequency model x variable grids.
+
+    Returns {frequency: (labels, variables, score, annotate)} where each
+    frequency gets its own independent model x variable matrix.
+    """
     import numpy as np
 
     collections = {r.get("collection") or "?" for r in rows}
     multi = len(collections) > 1
-    buckets = defaultdict(lambda: {"n": 0, "complete": 0, "partial": 0, "missing": 0})
-    for r in rows:
-        coll, model, var = r.get("collection") or "?", r.get("model") or "?", r.get("variable") or "?"
-        label = f"{coll} · {model}" if multi else model
-        b = buckets[(label, var)]
-        b["n"] += 1
-        b[r.get("status") or "missing" if (r.get("status") or "missing") in b else "missing"] += 1
-    labels = sorted({k[0] for k in buckets})
-    variables = sorted({k[1] for k in buckets})
-    li, vi = {x: i for i, x in enumerate(labels)}, {x: i for i, x in enumerate(variables)}
-    score = np.full((len(labels), len(variables)), np.nan)
-    annotate = np.zeros((len(labels), len(variables)), dtype=object)
-    for (lab, var), b in buckets.items():
-        i, j = li[lab], vi[var]
-        score[i, j] = (b["complete"] + 0.5 * b["partial"]) / b["n"]
-        annotate[i, j] = f"{b['complete']}/{b['n']}"
-    return labels, variables, score, annotate
+    frequencies = sorted({r.get("frequency") or "?" for r in rows})
+    result = {}
+    for freq in frequencies:
+        freq_rows = [r for r in rows if (r.get("frequency") or "?") == freq]
+        buckets = defaultdict(lambda: {"n": 0, "complete": 0, "partial": 0, "missing": 0, "files": 0})
+        for r in freq_rows:
+            coll, model, var = r.get("collection") or "?", r.get("model") or "?", r.get("variable") or "?"
+            label = f"{coll} · {model}" if multi else model
+            b = buckets[(label, var)]
+            if metric == "files":
+                b["files"] += int(r.get("n_files") or 0)
+            else:
+                b["n"] += 1
+                status = r.get("status") or "missing"
+                b[status if status in ("complete", "partial", "missing") else "missing"] += 1
+        labels = sorted({k[0] for k in buckets})
+        variables = sorted({k[1] for k in buckets})
+        li, vi = {x: i for i, x in enumerate(labels)}, {x: i for i, x in enumerate(variables)}
+        score = np.full((len(labels), len(variables)), np.nan)
+        annotate = np.zeros((len(labels), len(variables)), dtype=object)
+        for (lab, var), b in buckets.items():
+            i, j = li[lab], vi[var]
+            if metric == "files":
+                score[i, j] = float(b["files"])
+                annotate[i, j] = str(b["files"])
+            else:
+                score[i, j] = (b["complete"] + 0.5 * b["partial"]) / b["n"]
+                annotate[i, j] = f"{b['complete']}/{b['n']}"
+        result[freq] = (labels, variables, score, annotate)
+    return result
 
 
-def plot(rows, title_extra, out_path):
+def plot(rows, title_extra, out_path, metric: str = "status"):
     import matplotlib.pyplot as plt
     import numpy as np
 
     if not rows:
         print("No dataset rows to plot.", file=sys.stderr)
         sys.exit(1)
-    labels, variables, score, annotate = aggregate(rows)
+    freq_data = aggregate(rows, metric)
     n = len(rows)
-    nc = sum(1 for r in rows if r.get("status") == "complete")
-    np_ = sum(1 for r in rows if r.get("status") == "partial")
-    nm = sum(1 for r in rows if r.get("status") == "missing")
-    n_rows, n_cols = score.shape
-    fig_w = max(6.0, min(24.0, n_cols * 0.55 + 4.0))
-    fig_h = max(4.0, min(32.0, n_rows * 0.35 + 3.0))
-    fig, ax = plt.subplots(figsize=(fig_w, fig_h), constrained_layout=True)
-    cmap = plt.get_cmap("RdYlGn").copy()
-    cmap.set_bad(color="#eceff1")
-    im = ax.imshow(score, cmap=cmap, vmin=0.0, vmax=1.0, aspect="auto", interpolation="nearest")
-    ax.set_xticks(range(n_cols), labels=variables, rotation=90, fontsize=8)
-    ax.set_yticks(range(n_rows), labels=labels, fontsize=8)
-    ax.tick_params(length=0)
-    for spine in ax.spines.values():
-        spine.set_visible(False)
-    if n_rows * n_cols <= 400:
-        for i in range(n_rows):
-            for j in range(n_cols):
-                if not np.isnan(score[i, j]):
-                    color = "#212121" if 0.35 <= score[i, j] <= 0.65 else "white"
-                    ax.text(j, i, annotate[i, j], ha="center", va="center", fontsize=6, color=color)
-    cbar = fig.colorbar(im, ax=ax, fraction=0.03, pad=0.02)
-    cbar.set_label("completeness  (1=complete, 0.5=partial)", fontsize=8)
-    cbar.ax.tick_params(labelsize=7)
-    fig.suptitle(f"ESGF Dataset Download Status\n{title_extra}"
-                 f"{n} datasets   —   {nc} complete    {np_} partial    {nm} missing",
-                 fontsize=12, x=0.01, ha="left")
+    n_freqs = len(freq_data)
+    n_cols = min(2, n_freqs)
+    n_rows = (n_freqs + n_cols - 1) // n_cols
+    max_cols = max(len(v[1]) for v in freq_data.values())
+    max_rows = max(len(v[0]) for v in freq_data.values())
+    fig_w = max(8.0, min(28.0, max_cols * 0.55 * n_cols + 4.0))
+    fig_h = max(4.0, min(48.0, max_rows * 0.35 * n_rows + 3.0))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_w, fig_h),
+                             constrained_layout=True, squeeze=False)
+    for idx, (freq, (labels, variables, score, annotate)) in enumerate(sorted(freq_data.items())):
+        ax = axes[idx // n_cols][idx % n_cols]
+        n_rows_f, n_cols_f = score.shape
+        if metric == "files":
+            cmap = plt.get_cmap("Blues").copy()
+            vmax = float(np.nanmax(score)) if np.isfinite(score).any() else 1.0
+            vmax = vmax if vmax > 0 else 1.0
+            cbar_label = "files downloaded"
+            total = int(np.nansum(score))
+            cbar_text = lambda v: "white" if v > 0.5 * vmax else "#212121"
+            subplot_title = f"{freq} ({total} files)"
+        else:
+            cmap = plt.get_cmap("YlGn").copy()
+            vmax = 1.0
+            cbar_label = "completeness"
+            freq_rows = [r for r in rows if (r.get("frequency") or "?") == freq]
+            nc = sum(1 for r in freq_rows if r.get("status") == "complete")
+            np_ = sum(1 for r in freq_rows if r.get("status") == "partial")
+            nm = sum(1 for r in freq_rows if r.get("status") == "missing")
+            cbar_text = lambda v: "#212121" if v < 0.5 else "white"
+            subplot_title = f"{freq} ({nc} complete, {np_} partial, {nm} missing)"
+        cmap.set_bad(color="#eceff1")
+        im = ax.imshow(score, cmap=cmap, vmin=0.0, vmax=vmax, aspect="auto", interpolation="nearest")
+        ax.set_xticks(range(n_cols_f), labels=variables, rotation=90, fontsize=8)
+        ax.set_yticks(range(n_rows_f), labels=labels, fontsize=8)
+        ax.tick_params(length=0)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        if n_rows_f * n_cols_f <= 400:
+            for i in range(n_rows_f):
+                for j in range(n_cols_f):
+                    if not np.isnan(score[i, j]):
+                        ax.text(j, i, annotate[i, j], ha="center", va="center", fontsize=6,
+                                color=cbar_text(float(score[i, j])))
+        ax.set_title(subplot_title, fontsize=10)
+        cbar = fig.colorbar(im, ax=ax, fraction=0.03, pad=0.02)
+        cbar.set_label(cbar_label, fontsize=8)
+        cbar.ax.tick_params(labelsize=7)
+    for idx in range(n_freqs, n_rows * n_cols):
+        axes[idx // n_cols][idx % n_cols].set_visible(False)
+    if metric == "files":
+        total_all = sum(int(np.nansum(v[2])) for v in freq_data.values())
+        fig.suptitle(f"ESGF Local Files (model x variable)\n{title_extra}"
+                     f"{n} leaf dir(s)   —   {total_all} files",
+                     fontsize=12, x=0.01, ha="left")
+    else:
+        nc_all = sum(1 for r in rows if r.get("status") == "complete")
+        np_all = sum(1 for r in rows if r.get("status") == "partial")
+        nm_all = sum(1 for r in rows if r.get("status") == "missing")
+        fig.suptitle(f"ESGF Dataset Download Status\n{title_extra}"
+                     f"{n} datasets   —   {nc_all} complete    {np_all} partial    {nm_all} missing",
+                     fontsize=12, x=0.01, ha="left")
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    print(f"Wrote {out_path} ({n} datasets: {nc} complete, {np_} partial, {nm} missing)")
+    if metric == "files":
+        print(f"Wrote {out_path} ({n} leaf dir(s), {total_all} files)")
+    else:
+        print(f"Wrote {out_path} ({n} datasets: {nc_all} complete, {np_all} partial, {nm_all} missing)")
 
 
 def main():
@@ -135,36 +230,56 @@ def main():
     ap.add_argument("--experiment", help="Experiment / scenario, comma-separated")
     ap.add_argument("--variable", help="Variable_id, comma-separated")
     ap.add_argument("--frequency", help="Frequency, comma-separated")
-    ap.add_argument("--grid", help="Grid label, comma-separated")
+    ap.add_argument("--grid", help="Grid label / domain_id, comma-separated (e.g. gr, EUR-12)")
     ap.add_argument("--member", help="Variant/member label, comma-separated")
-    ap.add_argument("--domain", help="Realm, comma-separated")
+    ap.add_argument("--domain", help="Domain/realm, comma-separated (e.g. EUR-12, atmos)")
     ap.add_argument("--activity", help="Activity_id, comma-separated")
-    ap.add_argument("--out", default="./esgf_data", help="Local download dir to scan")
-    ap.add_argument("--csv", default="", help=f"Catalogue CSV (default: {DEFAULT_CSV} when present)")
-    ap.add_argument("--refresh", action="store_true", help="Re-query STAC and rewrite the CSV")
+    add_out_arg(ap, "Local download dir to scan (--compare --refresh)")
+    ap.add_argument("--csv-dir", default=DEFAULT_CSV_DIR,
+                    help=f"Local per-collection CSVs to plot (default: {DEFAULT_CSV_DIR})")
+    ap.add_argument("--csv", default="", help=f"Comparison CSV for --compare (default: {DEFAULT_CSV})")
+    ap.add_argument("--compare", action="store_true",
+                    help="Plot local-vs-STAC completeness from the comparison catalogue")
+    ap.add_argument("--refresh", action="store_true",
+                    help="With --compare: re-query STAC and rewrite the CSV")
+    ap.add_argument("--downloaded-only", action="store_true",
+                    help="Only plot variables that have at least one downloaded file")
     add_health_arg(ap)
     ap.add_argument("--image", default="./catalog.png", help="Output image (default: ./catalog.png)")
     args = ap.parse_args()
 
-    csv_path = args.csv or DEFAULT_CSV
-    from_stac = args.refresh or not os.path.exists(csv_path)
-    if from_stac:
-        rows = compute_rows(args)
-        if csv_path:
-            write_csv_rows(csv_path, rows)
-        title_extra = (f"collection={args.collection or '*'}  model={args.model or '*'}  "
-                       f"variable={args.variable or '*'}  experiment={args.experiment or '*'}\n")
+    filters = {"model": args.model, "experiment": args.experiment, "variable": args.variable,
+               "frequency": args.frequency, "grid": args.grid, "member": args.member,
+               "domain": args.domain, "activity": args.activity}
+    if args.compare:
+        csv_path = args.csv or DEFAULT_CSV
+        from_stac = args.refresh or not os.path.exists(csv_path)
+        if from_stac:
+            rows = compute_rows(args)
+            if rows:
+                write_csv_rows(csv_path, rows)
+            title_extra = (f"collection={args.collection or '*'}  model={args.model or '*'}  "
+                           f"variable={args.variable or '*'}  experiment={args.experiment or '*'}\n")
+        else:
+            rows = filter_rows(read_csv_rows(csv_path), args.collection, filters)
+            title_extra = f"from {csv_path}\n"
+        metric = "status"
     else:
-        filters = {"model": args.model, "experiment": args.experiment, "variable": args.variable,
-                   "frequency": args.frequency, "grid": args.grid, "member": args.member,
-                   "domain": args.domain, "activity": args.activity}
-        rows = filter_rows(read_csv_rows(csv_path), args.collection, filters)
-        title_extra = f"from {csv_path}\n"
+        if not glob.glob(os.path.join(args.csv_dir, "*.csv")):
+            print(f"No local catalogue CSVs in {args.csv_dir} - run stac_catalog first.",
+                  file=sys.stderr)
+            sys.exit(1)
+        rows = filter_rows(read_local_rows(args.csv_dir), args.collection, filters)
+        title_extra = f"from {args.csv_dir}\n"
+        metric = "files"
+    if args.downloaded_only:
+        rows = filter_downloaded_variables(rows)
+        title_extra += "downloaded variables only\n"
     if not rows:
         print("No dataset rows to plot.", file=sys.stderr)
         sys.exit(1)
     try:
-        plot(rows, title_extra, args.image)
+        plot(rows, title_extra, args.image, metric)
     except requests.exceptions.RequestException as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
