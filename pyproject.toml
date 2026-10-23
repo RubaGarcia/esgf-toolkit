@@ -13,3 +13,20 @@ dependencies = ["requests", "pandas", "matplotlib"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/esgf_stac"]
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[tool.pixi.pypi-dependencies]
+esgf-stac-toolkit = { path = ".", editable = true }
+pytest = ">=9.1.1,<10"
+
+[tool.pixi.tasks]
+test = "pytest"
+stac_health = "python -m esgf_stac.cli.health"
+stac_search = { cmd = "python -m esgf_stac.cli.search", depends-on = ["stac_health"] }
+stac_download = { cmd = "python -m esgf_stac.cli.download", depends-on = ["stac_health"] }
+stac_catalog = "python -m esgf_stac.cli.catalog"
+stac_plot = "python -m esgf_stac.cli.plot"
+stac_plot_cds = "python -m esgf_stac.cli.plot_cds"
