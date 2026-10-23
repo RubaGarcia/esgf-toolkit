@@ -14,6 +14,8 @@ from .records import (
     strip_prefixes,
 )
 from .tables import (
+    collapse_variables,
+    combine_time,
     display_columns,
     files_to_dataframe,
     items_to_dataframe,
@@ -23,7 +25,8 @@ from .tables import (
 __all__ = [
     "DEFAULT_LIMIT", "NODES",
     "availability", "build_body", "checksum_algorithm",
-    "display_columns", "files_to_dataframe", "item_to_record",
+    "collapse_variables", "combine_time", "display_columns", "files_to_dataframe",
+    "item_to_record",
     "items_to_dataframe", "iter_files", "iter_items",
     "load_health", "parse_filter_values", "parse_title",
     "post", "prefix_for", "print_dataframe",

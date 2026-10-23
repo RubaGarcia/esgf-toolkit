@@ -9,6 +9,8 @@ import requests
 from esgf_stac import (
     DEFAULT_LIMIT,
     NODES,
+    collapse_variables,
+    combine_time,
     display_columns,
     items_to_dataframe,
     load_health,
@@ -48,9 +50,10 @@ def main():
         if args.csv:
             df.to_csv(args.csv, index=False)
             print(f"Full table ({len(df)} rows, {len(df.columns)} cols) written to {args.csv}")
-        cols = None if args.full else display_columns(df, args.columns or None)
-        print_dataframe(df, cols)
-        footer = (f"\n{data.get('numberMatched', '?')} items matched, showing {len(df)}, "
+        view = combine_time(collapse_variables(df))
+        cols = None if args.full else display_columns(view, args.columns or None)
+        print_dataframe(view, cols)
+        footer = (f"\n{data.get('numberMatched', '?')} items matched, showing {len(view)}, "
                   f"total {df['size_bytes'].sum() / 1e9:.2f} GB")
         if health_ts:
             footer += f"  |  health: {health_ts}"

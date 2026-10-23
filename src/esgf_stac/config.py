@@ -55,14 +55,14 @@ CORE_COLUMNS = [
 
 CORDEX_DISPLAY = [
     "project", "rcm_model", "driving_model", "driving_institution_id",
-    "experiment", "variable_id", "frequency", "domain_id", "member",
-    "start_datetime", "end_datetime", "size_bytes", "n_files", "n_servers", "avail",
+    "experiment", "n_variables", "frequency", "domain_id", "member",
+    "time", "size_bytes", "n_files", "n_servers", "avail",
 ]
 
 GENERIC_DISPLAY = [
-    "project", "model", "experiment", "variable_id", "frequency",
+    "project", "model", "experiment", "n_variables", "frequency",
     "grid_label", "realm", "member",
-    "start_datetime", "end_datetime", "size_bytes", "n_files", "n_servers", "avail",
+    "time", "size_bytes", "n_files", "n_servers", "avail",
 ]
 
 FILE_COLUMNS = [
