@@ -38,6 +38,19 @@ CMIP7_TITLE_KEYS = [
     "variable_id", "temporal_label", "grid_label",
 ]
 
+CMIP6_TITLE_KEYS = [
+    "project_id", "activity_id", "institution_id", "source_id",
+    "experiment_id", "variant_label", "table_id", "variable_id", "grid_label",
+]
+
+# Local DRS layouts: (leading path component, title keys, collection facet key).
+DRS_LAYOUTS = [
+    ("CORDEX", CORDEX_TITLE_KEYS, "project_id"),
+    ("MIP-DS", CMIP7_TITLE_KEYS, "mip_era"),
+    ("CMIP7", CMIP7_TITLE_KEYS, "mip_era"),
+    ("CMIP6", CMIP6_TITLE_KEYS, "project_id"),
+]
+
 CORE_COLUMNS = [
     "collection", "project", "item_id", "title",
     "activity_id", "domain_id", "domain",
