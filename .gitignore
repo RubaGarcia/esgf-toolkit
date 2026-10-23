@@ -1,0 +1,20 @@
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+
+# python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# generated data / outputs
+/esgf_data/
+/catalog/
+/catalog*.csv
+/catalog*.png
+/health.csv
+/out.json
+/all_catalogues.csv
+.~lock.*#
