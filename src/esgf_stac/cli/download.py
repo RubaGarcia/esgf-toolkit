@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 
 from esgf_stac import NODES, files_to_dataframe, iter_files, iter_items, load_health, server_name, verify_file
-from esgf_stac.cli.common import add_filter_args, add_health_arg, add_node_arg, build_filters
+from esgf_stac.cli.common import add_filter_args, add_health_arg, add_node_arg, add_out_arg, build_filters
 from esgf_stac.config import CHUNK
 
 RETRIES = 3
@@ -49,6 +49,17 @@ def download_file(target, out_dir: str, flat: bool, verify: bool, statuses: dict
     out_part = out_path + ".part"
     replicas = order_replicas(replicas, statuses)
 
+    # Skip if final file already exists and looks complete.
+    if os.path.exists(out_path):
+        expected_size = next((s for _, _, _, s in replicas if s), None)
+        expected_checksum = next((c for _, _, c, _ in replicas if c), None)
+        if expected_size is None or os.path.getsize(out_path) == expected_size:
+            if verify and expected_checksum:
+                if verify_file(out_path, expected_checksum):
+                    return rel, os.path.getsize(out_path), "skipped"
+            else:
+                return rel, os.path.getsize(out_path), "skipped"
+
     for _attempt in range(RETRIES):
         for href, protocol, checksum, size in replicas:
             try:
@@ -83,7 +94,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     add_node_arg(ap)
     add_filter_args(ap)
-    ap.add_argument("--out", default="./esgf_data", help="Destination dir (default: ./esgf_data)")
+    add_out_arg(ap, "Destination dir for downloads")
     ap.add_argument("--columns", default="", help="Comma-separated manifest columns to display (default: auto)")
     ap.add_argument("--manifest", default="", help="Write the per-file manifest to CSV")
     ap.add_argument("--flat", action="store_true", help="Save files flat by filename (default: mirror DRS path)")
@@ -143,6 +154,8 @@ def main():
                 rel, size, status = f.result()
                 if status == "ok":
                     print(f"[{i}/{len(targets)}] done  {rel} ({size / 1e6:.1f} MB)")
+                elif status == "skipped":
+                    print(f"[{i}/{len(targets)}] skipped (already downloaded)  {rel} ({size / 1e6:.1f} MB)")
                 else:
                     print(f"[{i}/{len(targets)}] FAIL  {rel}  ({status})")
                     fail += 1
